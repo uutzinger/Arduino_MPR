@@ -1,0 +1,39 @@
+# Build output
+archive/
+build/
+.pio/
+*.o
+*.obj
+*.elf
+*.bin
+*.hex
+*.map
+*.out
+*.a
+
+# Host test binaries (extras/host_test)
+extras/host_test/host_test
+extras/host_test/*.exe
+
+# Arduino / IDE
+.vscode/
+.idea/
+*.code-workspace
+.vscode/ipch/
+arduino-cli.yaml
+sketch.json
+
+# Credentials / local config
+secrets.h
+credentials.h
+*.env
+.env
+
+# OS / editor junk
+.DS_Store
+Thumbs.db
+*~
+*.swp
+*.bak
+*.tmp
+*.log
