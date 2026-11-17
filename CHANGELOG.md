@@ -1,8 +1,8 @@
 # Changelog
 
-All changes since the 1.0.0 release. Items F01 to F12 refer to the findings of the code review ("Astra Code Review.md", 2026-11-16). Each entry gives the change and the reason for it.
+Changes between 1.0.0 and 1.1.0. Items F01 to F12 refer to the findings of the code review ("Astra Code Review.md", 2026-11-16). Each entry gives the change and the reason for it.
 
-## Unreleased (after 1.0.0)
+## 1.1.0 - 2026-11-17
 
 ### Fixed
 

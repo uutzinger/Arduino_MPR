@@ -1,6 +1,6 @@
 # TODO
 
-Open items after the F01 to F12 fixes (see CHANGELOG.md). Nothing here is known to be broken; these are checks and decisions that need hardware, a target toolchain or a design decision.
+Open items after the 1.1.0 release (F01 to F12 fixes) (see CHANGELOG.md). Nothing here is known to be broken; these are checks and decisions that need hardware, a target toolchain or a design decision.
 
 ## Hardware checks (need a sensor and a logic analyzer)
 
@@ -36,4 +36,4 @@ Suggested order: do 1 first, because it can invalidate assumptions in the other 
 
 - **F10 exact overrun count.** Needs `push()` in UUtzinger_RingBuffer to report how many items it overwrote. Worth doing there if overrun accounting matters; otherwise keep the documented approximation.
 - **Non-blocking recovery (F02).** Only if item 4 under hardware checks shows the stall is a problem.
-- Decide whether to bump `library.properties` to 1.1.0 and tag a release once the hardware checks are done.
+- 1.1.0 was released before the hardware checks above. Findings from those checks go into 1.1.x / 1.2.0.
