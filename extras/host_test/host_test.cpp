@@ -309,10 +309,52 @@ static void test_lock_denied_no_timeout() {
   }
 }
 
+// F04: conversion completes while the unlock callback is delayed; duration must not underflow
+static bool g_unlock_delay = false;
+static bool lockOk(void *) { return true; }
+static void unlockDelayed(void *) {
+  if (!g_unlock_delay) return;
+  g_unlock_delay = false;
+  for (int i = 0; i < 100; i++) { g_now_us += 100; sim.tick(); }   // 10 ms scheduling delay, EOC fires meanwhile
+}
+static void test_delayed_unlock() {
+  printf("command return delayed: no underflow\n");
+  reset_sim();
+  M m(MprRange::R_0300YG, MprTransfer::B, MprUnit::MMHG, 0x18, 10, 11);
+  m.setBusLock(lockOk, unlockDelayed, nullptr);
+  m.begin(wire); m.start(0);
+  g_unlock_delay = true;
+  run_ms(m, 100);
+  MprStats st = m.stats();
+  CHECK(st.good > 0);
+  CHECK(st.conv_max_us < 10000);
+  CHECK(st.conv_min_us >= MPR_CONV_MIN_US - 500);
+}
+
+// F03: an early edge must not become the sample time stamp
+static void test_early_edge() {
+  printf("early EOC edge discarded\n");
+  reset_sim();
+  M m(MprRange::R_0300YG, MprTransfer::B, MprUnit::MMHG, 0x18, 10, 11);
+  m.begin(wire); m.start(0);
+  sim.eoc_works = false;                         // only the spurious edge below, no genuine one
+  while (sim.cmds == 0) { g_now_us += 100; sim.tick(); m.update(); }
+  uint32_t t0 = g_now_us;
+  while ((uint32_t)(g_now_us - t0) < 1000) { g_now_us += 100; sim.tick(); m.update(); }
+  sim.handler();                                 // edge ~1 ms after the command
+  run_ms(m, 6);                                  // conversion done, before EOC time-out fallback
+  MprStats st = m.stats();
+  CHECK(st.eoc_spurious == 1);
+  CHECK(st.good == 0);                           // early edge was not accepted as the end of conversion
+  run_ms(m, 200);                                // fallback polling then delivers valid samples
+  st = m.stats();
+  CHECK(st.good > 0 && st.conv_min_us >= MPR_CONV_MIN_US);
+}
+
 int main() {
   test_text(); test_conversion(); test_poll(); test_eoc(); test_eoc_missing();
   test_saturation_and_range(); test_recovery_reset(); test_power_on_reset(); test_bus_dead();
-  test_busy_timeout(); test_bus_lock(); test_lock_denied_no_timeout();
+  test_busy_timeout(); test_bus_lock(); test_lock_denied_no_timeout(); test_delayed_unlock(); test_early_edge();
   printf(g_fail ? "\n%d CHECK(S) FAILED\n" : "\nall passed\n", g_fail);
   return g_fail ? 1 : 0;
 }

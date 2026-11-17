@@ -252,7 +252,7 @@ if (err != reported) {
 }
 ```
 
-`stats()` returns counters: `good`, `bad`, `err_hist[bit]` (how often each error bit occurred), `resets`, `bus_restarts`, `eoc_timeouts`, `eoc_early`, `eoc_low_seen`, `lock_failed`, and the conversion time `conv_min_us / conv_mean_us / conv_max_us`.
+`stats()` returns counters: `good`, `bad`, `err_hist[bit]` (how often each error bit occurred), `resets`, `bus_restarts`, `eoc_timeouts`, `eoc_early`, `eoc_spurious`, `eoc_low_seen`, `lock_failed`, and the conversion time `conv_min_us / conv_mean_us / conv_max_us`.
 
 ## Shared Bus
 

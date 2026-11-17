@@ -21,3 +21,5 @@ void digitalWrite(int p, int v);
 int  digitalRead(int p);
 void attachInterrupt(int pin, void (*fn)(), int mode);
 void detachInterrupt(int pin);
+inline void noInterrupts() {}
+inline void interrupts() {}

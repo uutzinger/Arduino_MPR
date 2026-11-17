@@ -111,6 +111,7 @@ struct MprStats {
   uint32_t resets, bus_restarts;
   uint32_t eoc_timeouts;        // EOC edge did not arrive, polling used instead
   uint32_t eoc_early;           // EOC edge arrived but status still busy
+  uint32_t eoc_spurious;        // EOC edge discarded: earlier than the minimum conversion time
   uint32_t eoc_low_seen;        // EOC pin low although status said ready
   uint32_t lock_failed;         // bus lock could not be acquired, attempt skipped
   uint32_t conv_min_us, conv_max_us;
@@ -228,6 +229,9 @@ private:
   void     computeScale();
   void     attachEoc();
   void     detachEoc();
+  bool     peekEoc(uint32_t &t);
+  void     consumeEoc(uint32_t t);
+  void     clearEoc();
   bool     checkIdleStatus(int st);
   void     noteWarn(uint16_t err) { _warn |= err; }
 
@@ -256,6 +260,7 @@ private:
   uint8_t  _status, _i2c_rc;
   uint16_t _last_err;
   double   _conv_sum;
+  uint32_t _conv_n;
   MprStats _st;
 
   MprSink  _sink;   void *_sink_ctx;

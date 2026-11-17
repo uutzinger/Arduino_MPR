@@ -95,7 +95,7 @@ MPR::MPR(MprRange range, MprTransfer tf, MprUnit unit, uint8_t i2c_addr, int8_t 
     _lock_blocked(false), _t_lockfail(0), _fallback(false), _isr_attached(false), _poll_this(false), _need_idle_check(false), _por(false),
     _seen_power(false), _failed(false), _interval_us(0), _next_start(0), _t_cmd(0), _t_poll(0),
     _fallback_ms(0), _last_reset_ms(0), _last_bus_ms(0), _consec(0), _warn(0), _status(0), _i2c_rc(0),
-    _last_err(0), _conv_sum(0.0), _sink(nullptr), _sink_ctx(nullptr), _lock(nullptr), _unlock(nullptr),
+    _last_err(0), _conv_sum(0.0), _conv_n(0), _sink(nullptr), _sink_ctx(nullptr), _lock(nullptr), _unlock(nullptr),
     _lock_ctx(nullptr)
 {
   memset(&_st, 0, sizeof(_st));
@@ -147,6 +147,7 @@ int MPR::writeCommand() {
   _wire->write((uint8_t)0x00);
   _wire->write((uint8_t)0x00);
   int rc = _wire->endTransmission();
+  if (rc == 0) { _t_cmd = micros(); }     // conversion starts at the STOP condition: stamp before unlock callback / task switch
   busUnlock();
   _i2c_rc = (uint8_t)rc;
   return rc;
@@ -171,11 +172,49 @@ int MPR::readResult(uint8_t *buf) {
 }
 
 // ---------------------------------------------------------------- interrupt
+// The EOC flag and its time stamp are published by the ISR and consumed by update().
+// Short critical sections give the task a coherent (flag, time) pair; no I2C or callback runs inside.
+#if defined(ARDUINO_ARCH_ESP32)
+  static portMUX_TYPE s_eoc_mux = portMUX_INITIALIZER_UNLOCKED;
+  #define MPR_ISR_ENTER()  portENTER_CRITICAL_ISR(&s_eoc_mux)
+  #define MPR_ISR_EXIT()   portEXIT_CRITICAL_ISR(&s_eoc_mux)
+  #define MPR_TASK_ENTER() portENTER_CRITICAL(&s_eoc_mux)
+  #define MPR_TASK_EXIT()  portEXIT_CRITICAL(&s_eoc_mux)
+#else
+  #define MPR_ISR_ENTER()
+  #define MPR_ISR_EXIT()
+  #define MPR_TASK_ENTER() noInterrupts()
+  #define MPR_TASK_EXIT()  interrupts()
+#endif
+
 void IRAM_ATTR MPR::isr(void *arg) {
   MPR *m = static_cast<MPR *>(arg);
   if (m == nullptr) { return; }
+  MPR_ISR_ENTER();
   m->_eoc_us   = micros();
   m->_eoc_flag = true;
+  MPR_ISR_EXIT();
+}
+
+bool MPR::peekEoc(uint32_t &t) {
+  MPR_TASK_ENTER();
+  bool f = _eoc_flag;
+  t = _eoc_us;
+  MPR_TASK_EXIT();
+  return f;
+}
+
+// Clear the flag only if no newer edge replaced the one that was inspected
+void MPR::consumeEoc(uint32_t t) {
+  MPR_TASK_ENTER();
+  if (_eoc_us == t) { _eoc_flag = false; }
+  MPR_TASK_EXIT();
+}
+
+void MPR::clearEoc() {
+  MPR_TASK_ENTER();
+  _eoc_flag = false;
+  MPR_TASK_EXIT();
 }
 
 void MPR::attachEoc() {
@@ -246,7 +285,7 @@ void MPR::end() {
 bool MPR::start(uint32_t interval_us) {
   if (_wire == nullptr) { return false; }
   _interval_us = interval_us;
-  _eoc_flag = false; _fallback = false; _poll_this = false;
+  clearEoc(); _fallback = false; _poll_this = false;
   _consec = 0; _failed = false;
   _last_reset_ms = _last_bus_ms = millis() - MPR_RECOVER_MIN_MS;
   attachEoc();
@@ -281,7 +320,7 @@ bool MPR::reset() {
   _por = false;
   _seen_power = ok;
   _need_idle_check = false;
-  _eoc_flag = false;
+  clearEoc();
   _fallback = false;                 // a stuck sensor also explains a missing EOC edge: try the interrupt again
   if (_state == S_CONVERTING) { _state = S_IDLE; }
   _next_start = micros();
@@ -295,8 +334,8 @@ MprMode MPR::mode() const {
 
 MprStats MPR::stats() const {
   MprStats s = _st;
-  if (s.good) { s.conv_mean_us = (float)(_conv_sum / (double)s.good); }
-  else        { s.conv_min_us = 0; s.conv_mean_us = 0.0f; }
+  if (_conv_n) { s.conv_mean_us = (float)(_conv_sum / (double)_conv_n); }
+  else         { s.conv_min_us = 0; s.conv_mean_us = 0.0f; }
   return s;
 }
 
@@ -320,7 +359,7 @@ void MPR::tryStart(uint32_t now) {
     _need_idle_check = false;
   }
 
-  _eoc_flag = false;                            // clear immediately before the command
+  clearEoc();                                   // clear immediately before the command
   _poll_this = false;
   _warn = 0;
   _lock_blocked = false;
@@ -328,8 +367,7 @@ void MPR::tryStart(uint32_t now) {
   if (rc == -2) { return; }                     // bus busy, try again on next update()
   if (rc != 0)  { _status = 0xFF; sampleBad(E_CMD); return; }
 
-  _t_cmd  = micros();
-  _t_poll = _t_cmd;
+  _t_poll = _t_cmd;                             // _t_cmd was recorded by writeCommand()
   _state  = S_CONVERTING;
   if (_interval_us) {                           // period measured from previous start, no drift
     uint32_t base = _next_start;
@@ -345,11 +383,15 @@ void MPR::processConverting(uint32_t now) {
 
   // End of conversion by interrupt
   if (_cfg_mode == MprMode::EOC_INTERRUPT && !_fallback && !_poll_this) {
-    if (_eoc_flag) {
-      if (el >= MPR_CONV_MIN_US) {
-        if (finishRead(_eoc_us)) { _eoc_flag = false; }   // flag stays set if the bus lock was not available
+    uint32_t te;
+    if (peekEoc(te)) {
+      if ((int32_t)(te - _t_cmd) < (int32_t)MPR_CONV_MIN_US) {
+        consumeEoc(te);                         // edge before the earliest possible end of conversion (or before the command): spurious
+        _st.eoc_spurious++;                     // keep waiting for a genuine edge; time-out / polling cover its absence
+      } else {
+        if (finishRead(te)) { consumeEoc(te); } // flag stays set if the bus lock was not available
+        return;
       }
-      return;
     }
     if (el <= MPR_EOC_TIMEOUT_MS * 1000UL) { return; }
     _fallback = true;                           // EOC wire broken or not connected: poll instead
@@ -419,7 +461,7 @@ bool MPR::finishRead(uint32_t t_stamp) {
     _st.err_hist[8]++;
     if (_cfg_mode == MprMode::EOC_INTERRUPT && !_fallback && !_poll_this) { _st.eoc_early++; }
     _poll_this = true;
-    _eoc_flag = false;
+    clearEoc();
     return true;
   }
 
@@ -428,10 +470,14 @@ bool MPR::finishRead(uint32_t t_stamp) {
 
   if (e & ~E_WARN) { sampleBad(e); return true; }
 
-  uint32_t conv = t_stamp - _t_cmd;
-  if (conv < _st.conv_min_us) { _st.conv_min_us = conv; }
-  if (conv > _st.conv_max_us) { _st.conv_max_us = conv; }
-  _conv_sum += (double)conv;
+  int32_t dt = (int32_t)(t_stamp - _t_cmd);
+  if (dt >= 0) {                                 // impossible (negative) durations are not added to the statistics
+    uint32_t conv = (uint32_t)dt;
+    if (conv < _st.conv_min_us) { _st.conv_min_us = conv; }
+    if (conv > _st.conv_max_us) { _st.conv_max_us = conv; }
+    _conv_sum += (double)conv;
+    _conv_n++;
+  }
   _st.good++;
   for (uint8_t b = 0; b < ERROR_BITS; b++) { if (e & (1U << b)) { _st.err_hist[b]++; } }
 

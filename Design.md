@@ -43,6 +43,7 @@ struct MprStats {
   uint32_t resets, bus_restarts;
   uint32_t eoc_timeouts;        // EOC edge did not arrive, polling used instead
   uint32_t eoc_early;           // EOC edge arrived but status still busy
+  uint32_t eoc_spurious;        // EOC edge discarded: earlier than the minimum conversion time
   uint32_t eoc_low_seen;        // EOC pin low although status said ready
   uint32_t lock_failed;         // bus lock could not be acquired, attempt skipped
   uint32_t conv_min_us, conv_max_us;
@@ -149,11 +150,13 @@ ISR, per instance (`attachInterruptArg` on ESP32, static trampoline table on oth
 void IRAM_ATTR MPR::isr(void *arg) {
   MPR *m = static_cast<MPR*>(arg);
   m->_eoc_us   = micros();
-  m->_eoc_flag = true;               // volatile
+  m->_eoc_flag = true;               // volatile; ESP32: inside a short critical section
 }
 ```
 
-The ISR performs no I2C, no printing and no buffer access.
+The ISR performs no I2C, no printing and no buffer access. `update()` reads the (flag, time) pair inside a short critical section (ESP32 spinlock, `noInterrupts()` elsewhere), so the 32-bit time cannot tear. An edge earlier than `MPR_CONV_MIN_US` after the command (or before it) is discarded and counted in `eoc_spurious`; the driver keeps waiting for a genuine edge, with the time-out and polling fallback as backstop.
+
+Thread safety: `stats()`, `lastError()` and the other accessors are not synchronized. Call them from the task that calls `update()`, or protect both sides with your own mutex.
 
 Edge/race handling
 1. Clear the flag immediately before writing the conversion command, never after.
@@ -450,7 +453,7 @@ Bench checks for the first implementation
 
 Implementation notes
 - `begin()` returns false if the sensor is not ready (no answer, not powered, memory error) but leaves the driver configured, so `start()` and the recovery ladder still work.
-- Conversion time in `stats()` is measured from the end of the command write to the EOC edge (interrupt) or to the successful status poll.
+- Conversion time in `stats()` is measured from the STOP condition of the command write (stamped before the bus unlock callback) to the EOC edge (interrupt) or to the successful status poll.
 - Host tests with a simulated sensor: `extras/host_test/`.
 
 Open items (hardware needed): EOC falling-edge timing, minimum reset pulse width, confirmation of the range table against the datasheet.
