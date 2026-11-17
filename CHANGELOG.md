@@ -1,6 +1,26 @@
 # Changelog
 
-Changes between 1.0.0 and 1.2.0. Items F01 to F12 refer to the findings of the code review ("Astra Code Review.md", 2026-11-16). Each entry gives the change and the reason for it.
+Changes between 1.0.0 and 1.3.0. Items F01 to F12 refer to the findings of the code review ("Astra Code Review.md", 2026-11-16). Each entry gives the change and the reason for it.
+
+## 1.3.0 - 2026-11-17
+
+### Added
+
+- **Builds on AVR (Arduino Uno) and Teensy 4 as well as ESP32.** Verified by compiling the library for `arduino:avr:uno`, `teensy:avr:teensy40` and `esp32:esp32:esp32` / `esp32s3`; the ESP32 build compiles the `portMUX` critical sections and `attachInterruptArg`, the Teensy build the generic four-slot interrupt trampolines. AVR needed RingBuffer 2.1.1 (no `<type_traits>` on avr-gcc), hence the new dependency `UUtzinger_RingBuffer (>=2.1.1)`.
+- `examples/BasicPortable`: example that builds on any board (uses only `Serial.print`, no ESP32 APIs).
+
+### Changed
+
+- **`setZero()`, `setCal()`, `setCountsRange()` and `setRange()` validate their input and return `bool`.** Unusable values (NaN or infinity, zero `cal`, negative or out of 24 bit zero, reversed/empty/over 24 bit counts range, non-positive full scale) are rejected and the previous value is kept. *Reason:* a reversed counts range set the scale to zero and could underflow the range-margin arithmetic. Existing code that ignores the return value still compiles.
+- The ESP32-specific examples (Basic, Diagnostics, EocInterrupt, SharedBus) stop with a clear `#error` on other boards instead of a list of unrelated compile errors; the README says which examples are portable.
+
+- `start()` limits the interval to `MPR_MAX_INTERVAL_US` (30 min). *Reason:* deadlines are compared as signed 32 bit values, which is only correct for intervals below 2^31 us.
+- Compile-time checks (`static_assert`) reject inconsistent timing overrides: `MPR_CONV_MIN_US` not below the EOC time-out or conversion time-out, a zero or too long `MPR_POLL_US`. *Reason:* e.g. `-DMPR_CONV_MIN_US=20000` made every genuine EOC edge unacceptable without any message.
+
+### Tests
+
+- The whole host suite now runs five times with the mock clock starting shortly before the 32 bit `micros()` wrap, so every timing test crosses the wrap. The mock `millis()` keeps counting across the wrap, like the real one.
+- New host tests: short data read, EOC fallback followed by the interrupt retry after `MPR_EOC_RETRY_MS`, a pin without interrupt support, exhaustion of the four interrupt slots, setter validation, a very long interval across the wrap.
 
 ## 1.2.0 - 2026-11-17
 

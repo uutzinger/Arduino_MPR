@@ -34,6 +34,9 @@
 #define MPR_I2C_LONGSTRETCH     200
 
 // ---------------------------------------------------------------- timing constants (overridable)
+#ifndef MPR_MAX_INTERVAL_US
+  #define MPR_MAX_INTERVAL_US 1800000000UL  // longest start() interval (30 min); longer values are limited to this
+#endif
 #ifndef MPR_CONV_MIN_US
   #define MPR_CONV_MIN_US       3000UL  // no status poll / EOC accepted earlier than this after the command
 #endif
@@ -192,11 +195,11 @@ public:
   // Conversion
   float    toPressure(uint32_t counts) const;
   float    toPressure(const MprSample &s) const { return toPressure(s.counts); }
-  void     setZero(float counts);
+  bool     setZero(float counts);
   float    zero() const          { return _have_zero ? _zero : (float)_cmin; }
-  void     setCal(float k);
-  void     setCountsRange(uint32_t mn, uint32_t mx);
-  void     setRange(float p_max, MprUnit native);
+  bool     setCal(float k);
+  bool     setCountsRange(uint32_t mn, uint32_t mx);
+  bool     setRange(float p_max, MprUnit native);
   uint32_t minCounts() const     { return _cmin; }
   uint32_t maxCounts() const     { return _cmax; }
 

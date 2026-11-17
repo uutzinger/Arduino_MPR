@@ -1,5 +1,8 @@
 // MPR diagnostics: bus, status, series of readings, offset, noise, conversion time, EOC, statistics.
 // Sensor must be open to air and not moving. Send 'd' to repeat, 'z' to zero, 'h' for help.
+#if !defined(ARDUINO_ARCH_ESP32)
+  #error "This example uses ESP32 APIs (TwoWire(n), printf, FreeRTOS). For other boards see BasicPortable."
+#endif
 #include <Wire.h>
 #include <math.h>
 #include <MPR.h>

@@ -1,4 +1,7 @@
 // MPR with EOC interrupt, RST pin, recovery callbacks and error reporting by the application.
+#if !defined(ARDUINO_ARCH_ESP32)
+  #error "This example uses ESP32 APIs (TwoWire(n), printf, FreeRTOS). For other boards see BasicPortable."
+#endif
 #include <Wire.h>
 #include <MPR.h>
 

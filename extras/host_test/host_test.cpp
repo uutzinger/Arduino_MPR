@@ -24,6 +24,7 @@ struct Sim {
   bool     rst_low = false;
   int      resets = 0;
   bool     ignore_rst = false;
+  bool     short_read = false;    // 4 byte read returns only 3 bytes
   void (*handler)() = nullptr;
   uint8_t status() const { return flags | ((converting || busy_stuck) ? 0x20 : 0); }
   void tick() {
@@ -61,6 +62,7 @@ uint8_t TwoWire::requestFrom(uint8_t, uint8_t n) {
   uint8_t st = sim.status();
   _rx[0] = st;
   if (n == 4) { _rx[1] = sim.counts >> 16; _rx[2] = sim.counts >> 8; _rx[3] = sim.counts; }
+  if (sim.short_read && n == 4) { n = 3; }
   _nrx = n;
   g_now_us += 100 * (n + 1);
   return n;
@@ -77,7 +79,8 @@ static void run_ms(MPR &m, uint32_t ms) {
   uint32_t end = g_now_us + ms * 1000UL;
   while ((int32_t)(g_now_us - end) < 0) { g_now_us += 100; sim.tick(); m.update(); }
 }
-static void reset_sim() { sim = Sim(); g_now_us = 1000; }
+static uint32_t g_start_us = 1000;                // the suite is repeated with start times just below the 32 bit micros() wrap
+static void reset_sim() { sim = Sim(); g_now_us = g_start_us; }
 
 typedef MPRBuffer<32> M;
 
@@ -463,11 +466,112 @@ static void test_buffer_overruns() {
   CHECK(m.overruns() == o + (m.stats().good - good) - 1);   // one free slot absorbed one sample
 }
 
-int main() {
+static void test_short_read() {
+  printf("short data read\n");
+  reset_sim();
+  M m(MprRange::R_0300YG, MprTransfer::B, MprUnit::MMHG, 0x18, 10, 11);
+  m.begin(wire); m.start(0);
+  run_ms(m, 50);
+  sim.short_read = true;
+  run_ms(m, 20);
+  CHECK(m.stats().err_hist[1] > 0);              // E_READ
+  CHECK(m.stats().good > 0);
+  sim.short_read = false;
+  uint32_t good = m.stats().good;
+  run_ms(m, 100);
+  CHECK(m.stats().good > good + 5);
+  CHECK(m.lastError() == 0);
+}
+
+static void test_eoc_retry() {
+  printf("EOC fallback, then interrupt retried\n");
+  reset_sim();
+  M m(MprRange::R_0300YG, MprTransfer::B, MprUnit::MMHG, 0x18, 10, 11);
+  m.begin(wire); m.start(0);
+  sim.eoc_works = false;
+  run_ms(m, 200);
+  CHECK(m.stats().eoc_timeouts == 1);
+  CHECK(m.mode() == MprMode::STATUS_POLL);       // fallback
+  sim.eoc_works = true;                          // wire repaired
+  run_ms(m, MPR_EOC_RETRY_MS + 200);
+  CHECK(m.mode() == MprMode::EOC_INTERRUPT);     // interrupt in use again
+  CHECK(m.stats().eoc_timeouts == 1);
+  uint32_t good = m.stats().good;
+  run_ms(m, 100);
+  CHECK(m.stats().good > good + 5);
+  CHECK(m.lastError() == 0);
+}
+
+static void test_interrupt_pins() {
+  printf("pin without interrupt, interrupt slot exhaustion\n");
+  reset_sim();
+  M a(MprRange::R_0300YG, MprTransfer::B, MprUnit::MMHG, 0x18, 99, 11);   // pin 99 has no interrupt
+  a.begin(wire); a.start(0);
+  CHECK(a.mode() == MprMode::STATUS_POLL);
+  run_ms(a, 100);
+  CHECK(a.stats().good > 5 && a.stats().eoc_timeouts == 0);
+  a.stop();
+
+  // generic cores have four interrupt slots (ESP32 does not use them)
+  M *s[5];
+  for (int i = 0; i < 5; i++) { s[i] = new M(MprRange::R_0300YG, MprTransfer::B, MprUnit::MMHG, 0x18, 10 + i, 11); s[i]->begin(wire); s[i]->start(0); }
+#if !defined(ARDUINO_ARCH_ESP32)
+  for (int i = 0; i < 4; i++) { CHECK(s[i]->mode() == MprMode::EOC_INTERRUPT); }
+  CHECK(s[4]->mode() == MprMode::STATUS_POLL);   // no free slot: polling
+  s[0]->end();                                   // free a slot
+  s[4]->begin(wire); s[4]->start(0);
+  CHECK(s[4]->mode() == MprMode::EOC_INTERRUPT);
+#endif
+  for (int i = 0; i < 5; i++) { s[i]->end(); delete s[i]; }
+}
+
+static void test_long_interval() {
+  printf("long sampling interval across the micros() wrap\n");
+  reset_sim();
+  M m(MprRange::R_0300YG, MprTransfer::B, MprUnit::MMHG, 0x18, 10, 11);
+  m.begin(wire); m.start(0xFFFFFFFFu);           // absurd: limited to MPR_MAX_INTERVAL_US
+  uint32_t t0 = g_now_us;
+  run_ms(m, 100);
+  CHECK(m.stats().good == 1);                    // first sample at once, next one far away
+  g_now_us = t0 + 1700000000UL;                  // just before the limit, passing the wrap for most start times
+  sim.tick();
+  int cmds = sim.cmds;
+  m.update();
+  CHECK(sim.cmds == cmds);                       // not due yet (limit is 1.8e9 us)
+}
+
+static void test_setter_validation() {
+  printf("setter validation\n");
+  M m(MprRange::R_0300YG, MprTransfer::B, MprUnit::MMHG);
+  float p0 = m.toPressure((uint32_t)419430 + 1000);
+  CHECK(!m.setCountsRange(500000, 100000));      // reversed
+  CHECK(!m.setCountsRange(1000, 1000));          // empty
+  CHECK(!m.setCountsRange(0, 0xFFFFFFFFUL));     // more than 24 bit
+  CHECK(!m.setZero(NAN) && !m.setZero(INFINITY) && !m.setZero(-1.0f));
+  CHECK(!m.setCal(NAN) && !m.setCal(0.0f) && !m.setCal(INFINITY));
+  CHECK(!m.setRange(0.0f, MprUnit::PSI) && !m.setRange(NAN, MprUnit::PSI));
+  CHECK(m.toPressure((uint32_t)419430 + 1000) == p0);   // rejected values changed nothing
+  CHECK(m.setCountsRange(413800, 3774874));
+  CHECK(m.setZero(413800.0f) && m.setCal(1.02f) && m.setRange(300.0f, MprUnit::MMHG));
+  CHECK(m.minCounts() == 413800);
+}
+
+static void run_all() {
   test_text(); test_conversion(); test_poll(); test_eoc(); test_eoc_missing();
   test_saturation_and_range(); test_recovery_reset(); test_power_on_reset(); test_bus_dead();
   test_busy_timeout(); test_bus_lock(); test_lock_denied_no_timeout(); test_delayed_unlock(); test_early_edge();
   test_begin_failure_reporting(); test_no_command_while_busy(); test_busy_with_fault(); test_bus_recover_success(); test_clear_stats(); test_buffer_overruns();
+  test_short_read(); test_eoc_retry(); test_interrupt_pins(); test_setter_validation(); test_long_interval();
+}
+
+int main() {
+  // Whole suite at several start times; the 32 bit micros() wraps during the tests when started shortly before 2^32
+  const uint32_t starts[] = {1000u, 0xFFFFFFFFu - 40000u, 0xFFFFFFFFu - 700000u, 0xFFFFFFFFu - 2500000u, 0xFFFFFFFFu - 9000000u};
+  for (uint32_t st : starts) {
+    g_start_us = st;
+    printf("\n######## start time %lu us ########\n", (unsigned long)st);
+    run_all();
+  }
   printf(g_fail ? "\n%d CHECK(S) FAILED\n" : "\nall passed\n", g_fail);
   return g_fail ? 1 : 0;
 }

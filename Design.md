@@ -89,10 +89,10 @@ public:
   // Conversion
   float    toPressure(uint32_t counts) const;
   float    toPressure(const MprSample &s) const { return toPressure(s.counts); }
-  void     setZero(float counts);   float zero() const;
-  void     setCal(float k);                          // pressure calibration factor, default 1.0
-  void     setCountsRange(uint32_t mn, uint32_t mx); // per-sensor measured min/max counts
-  void     setRange(float p_max, MprUnit native);    // for MprRange::CUSTOM
+  bool     setZero(float counts);   float zero() const;
+  bool     setCal(float k);                          // pressure calibration factor, default 1.0
+  bool     setCountsRange(uint32_t mn, uint32_t mx); // per-sensor measured min/max counts
+  bool     setRange(float p_max, MprUnit native);    // for MprRange::CUSTOM
 
   // Hooks
   void     setSink(MprSink fn, void *ctx);           // used by MPRBuffer

@@ -3,8 +3,13 @@
 // ************************************************************************
 #include "MPR.h"
 #include <string.h>
+#include <math.h>
 
 static_assert(MPR_EOC_TIMEOUT_MS < MPR_CONV_TIMEOUT_MS, "EOC time-out must be shorter than conversion time-out");
+static_assert(MPR_CONV_MIN_US < MPR_EOC_TIMEOUT_MS * 1000UL, "MPR_CONV_MIN_US must be shorter than the EOC time-out, otherwise a genuine EOC edge is never accepted");
+static_assert(MPR_CONV_MIN_US < MPR_CONV_TIMEOUT_MS * 1000UL, "MPR_CONV_MIN_US must be shorter than the conversion time-out");
+static_assert(MPR_POLL_US > 0 && MPR_POLL_US < MPR_CONV_TIMEOUT_MS * 1000UL, "MPR_POLL_US must be positive and shorter than the conversion time-out");
+static_assert(MPR_MAX_INTERVAL_US < 0x80000000UL, "deadlines are compared as signed 32 bit values");
 
 // ---------------------------------------------------------------- tables
 namespace {
@@ -118,10 +123,23 @@ void MPR::computeScale() {
   _fac   = paPerUnit(_native) / paPerUnit(_unit);
 }
 
-void MPR::setZero(float counts)                  { _zero = counts; _have_zero = true; }
-void MPR::setCal(float k)                        { _cal = k; }
-void MPR::setCountsRange(uint32_t mn, uint32_t mx) { _cmin = mn; _cmax = mx; computeScale(); }
-void MPR::setRange(float p_max, MprUnit native)  { _pmax = p_max; _native = native; computeScale(); }
+// Setters validate their input and return false (leaving the previous value) for unusable values.
+bool MPR::setZero(float counts) {
+  if (!isfinite(counts) || counts < 0.0f || counts > 16777215.0f) { return false; }   // 24 bit counts
+  _zero = counts; _have_zero = true; return true;
+}
+bool MPR::setCal(float k) {
+  if (!isfinite(k) || k == 0.0f) { return false; }
+  _cal = k; return true;
+}
+bool MPR::setCountsRange(uint32_t mn, uint32_t mx) {
+  if (mx <= mn || mx > 0xFFFFFFUL) { return false; }     // reversed / empty range, or more than 24 bit
+  _cmin = mn; _cmax = mx; computeScale(); return true;
+}
+bool MPR::setRange(float p_max, MprUnit native) {
+  if (!isfinite(p_max) || p_max <= 0.0f) { return false; }
+  _pmax = p_max; _native = native; computeScale(); return true;
+}
 
 float MPR::toPressure(uint32_t counts) const {
   float base = _have_zero ? _zero : (float)_cmin;
@@ -288,6 +306,7 @@ void MPR::end() {
 
 bool MPR::start(uint32_t interval_us) {
   if (_wire == nullptr) { return false; }
+  if (interval_us > MPR_MAX_INTERVAL_US) { interval_us = MPR_MAX_INTERVAL_US; }   // deadline comparison is signed 32 bit
   _interval_us = interval_us;
   _consec = 0; _failed = false; _bus_tried = false;
   _last_reset_ms = _last_bus_ms = millis() - MPR_RECOVER_MIN_MS;

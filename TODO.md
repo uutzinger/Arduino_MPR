@@ -1,6 +1,6 @@
 # TODO
 
-Open items after the 1.1.0 release (F01 to F12 fixes) (see CHANGELOG.md). Nothing here is known to be broken; these are checks and decisions that need hardware, a target toolchain or a design decision.
+Open items after the 1.3.0 release (see CHANGELOG.md). Nothing here is known to be broken; these are checks and decisions that need hardware, a target toolchain or a design decision.
 
 ## Hardware checks (need a sensor and a logic analyzer)
 
@@ -15,24 +15,19 @@ Suggested order: do 1 first, because it can invalidate assumptions in the other 
 3. **Real recovery behavior.** Unplug the sensor, short SDA to ground, cut power briefly, hold RST low. Compare against the ladder in Design.md section 7 (reset, then `onBusRecover`, then FAILED). Confirm the sensor really reports power and memory bits as the datasheet says, and that BUSY plus fault combinations (F08) can occur.
 4. **Longest update() time.** Measure `update()` duration during a successful reset, a failed reset and normal sampling, and decide whether the bounded stall of about 60 ms is acceptable for your applications. If not, a timed reset state machine (the alternative discussed for F02) becomes necessary.
 
-## Target builds (need toolchains)
+## Target builds
 
-- Build all four examples for ESP32-S3. The host mock does not compile the `attachInterruptArg` path or the `portMUX` critical sections added for F05.
-- Build the library (not the examples) for at least one non-ESP32 target, for example an AVR or RP2040 board. This exercises the generic four-slot interrupt trampolines and the `noInterrupts()` path. Examples use ESP32-specific APIs; either mark them as such in `library.properties` / README or make them portable.
-- Run a two-task test on ESP32: sampling task calls `update()`, a second task reads `stats()` and the ring buffer. Confirm no EOC samples are lost or torn, and decide whether `stats()` needs a mutex wrapper in the SharedBus example.
+- Done (1.3.0): library builds for Uno (AVR), Teensy 4 and ESP32 / ESP32-S3; the four ESP32 examples build for ESP32-S3.
+- Still open, needs hardware: two-task test on ESP32. Sampling task calls `update()`, a second task reads `stats()` and the ring buffer. Confirm no EOC samples are lost or torn, and decide whether `stats()` needs a mutex wrapper in the SharedBus example.
+- Not tried: other cores (RP2040, STM32, nRF52, ESP8266). The generic interrupt path is only compile-tested on Teensy 4 and AVR.
 
 ## Tests still to add (host)
 
-- Timer wrap: run the new tests (lock denial, early edge, delayed unlock) with the clock starting just below 2^32.
-- Mock realism: short reads, lock waits that consume time during every transaction, interrupts arriving in the middle of a transaction.
-- EOC retry after the 10 s fallback period; invalid interrupt pin (falls back to polling); fifth sensor on generic cores (four slots exhausted); two independent sensors on one or two buses.
-- Define and test the maximum supported sampling interval for the signed deadline comparison (`(int32_t)(now - _next_start)`), and pathological compile-time timing overrides (for example `MPR_CONV_MIN_US` above `MPR_EOC_TIMEOUT_MS`; the existing `static_assert` only covers one pair).
-
-## Input validation
-
-- `setCountsRange()` with reversed bounds sets the scale to zero and can underflow the range-margin arithmetic. Decide: reject (return false) or swap. Same for non-finite calibration inputs (`setCal`, `setZero`). Low priority because it needs an invalid configuration.
+- Two independent sensors (different addresses or buses, each with its own EOC pin). The mock has one simulated sensor and one interrupt handler; it needs a per-pin / per-address model.
+- Interrupts arriving in the middle of a transaction (mock calls the handler only between `update()` calls).
+- Hardware-in-the-loop version of the early-edge test once the real minimum conversion time is known.
 
 ## Design decisions pending
 
 - **Non-blocking recovery (F02).** Only if item 4 under hardware checks shows the stall is a problem.
-- 1.1.0 was released before the hardware checks above. Findings from those checks go into 1.1.x / 1.2.0.
+- The hardware checks above were not done before the 1.1.0 to 1.3.0 releases. Findings from them go into 1.3.x / 1.4.0.

@@ -6,6 +6,9 @@
 // With several MPR sensors on the same bus, give all of them the same lock functions.
 //
 // If everything runs from one loop() / one task, you do not need any of this.
+#if !defined(ARDUINO_ARCH_ESP32)
+  #error "This example uses ESP32 APIs (TwoWire(n), printf, FreeRTOS). For other boards see BasicPortable."
+#endif
 #include <Wire.h>
 #include <MPR.h>
 

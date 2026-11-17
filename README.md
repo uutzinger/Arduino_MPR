@@ -14,14 +14,17 @@ It differs from other implementations:
 
 For design details see [Design.md](Design.md).
 Examples in `examples/`: 
-- Basic
-- EocInterrupt (interrupt driven, RST, recovery callbacks)
-- Diagnostics (reads several datapoints and reports status and errors)
-- SharedBus (several tasks on one I2C bus).
+- BasicPortable (any board: AVR, ARM, ESP32; polling, no extras)
+- Basic (ESP32)
+- EocInterrupt (ESP32; interrupt driven, RST, recovery callbacks)
+- Diagnostics (ESP32; reads several datapoints and reports status and errors)
+- SharedBus (ESP32; several tasks on one I2C bus).
+
+The driver itself builds for AVR (Arduino Uno), ARM (Teensy 4) and ESP32; the examples other than BasicPortable use ESP32-only APIs and stop with an `#error` on other boards.
 
 ## Installation
 
-Copy the folder to your Arduino `libraries` folder. It needs the library [UUtzinger_RingBuffer](https://github.com/uutzinger/RingBuffer).
+Copy the folder to your Arduino `libraries` folder. It needs the library [UUtzinger_RingBuffer](https://github.com/uutzinger/RingBuffer) version 2.1.1 or newer.
 Tested with the ESP32 Arduino core (Feather ESP32-S3); the code has no ESP32-only parts other than a few optional speed-ups, but other cores have not been built yet.
 
 ## Minimalistic program
@@ -99,7 +102,7 @@ bool reset();                           // RST pulse, blocks about 15 ms
 - **`begin()`** configures the pins, resets the sensor (RST pin) or waits for start-up, and checks the status. It returns `false` if the sensor is not ready (no answer, not powered, memory error). Read `mpr.status()` and the error helpers to see why. The driver stays configured, so you can still call `start()` and let the recovery ladder try again.
   - It does **not** call `Wire.begin()`. Set up the bus (pins, clock, time-out) in your program first.
   - `clock_hz = 0` leaves the bus clock alone (recommended, especially on a shared bus). A non-zero value calls `setClock()` and affects every device on that bus.
-- **`start(interval_us)`**: `0` runs conversions back to back (about 160 to 200 samples/s). A non-zero value starts a conversion every `interval_us` microseconds, measured from start to start (no drift). If the loop is late the driver does not try to catch up.
+- **`start(interval_us)`**: `0` runs conversions back to back (about 160 to 200 samples/s). A non-zero value starts a conversion every `interval_us` microseconds, measured from start to start (no drift). If the loop is late the driver does not try to catch up. Intervals longer than `MPR_MAX_INTERVAL_US` (30 minutes) are limited to it.
 - **`update()`** is the only function that talks to the sensor after `begin()`. Call it often from `loop()` or from a task you create. It handles interrupt from EOC. In normal operation it does at most one short I2C transaction per call, or two or three back to back when a sample completes (status check, 4-byte read, next command), and it does not wait. The one exception is automatic recovery: a sensor reset (needs the RST pin) blocks `update()` for about 10 ms plus the wait for the power bit (bounded by 50 ms), and `onBusRecover` runs your own code; both are rate limited by `MPR_RECOVER_MIN_MS`. If this is not acceptable in your loop, use `onBeforeReset` to prepare for it. The sampling rate is only reached if `update()` is called at least every few hundred microseconds to a millisecond; in EOC mode the exact time of each sample is still captured by the interrupt.
 - **`stop()`** halts conversions and detaches the interrupt; **`end()`** also forgets the `TwoWire`. `start()` can be called again afterwards.
 - **`reset()`** needs an RST pin (returns `false` otherwise). It blocks for about 15 ms (5 ms low, 5 ms wait, then waits for the power bit). The driver also calls it by itself during recovery.
@@ -117,11 +120,11 @@ pressure = (counts - zero) * (P_MAX - P_MIN) / (MAX_COUNTS - MIN_COUNTS) * unit_
 `zero` is the nominal `MIN_COUNTS` of the transfer function unless you set it.
 
 ```cpp
-void     setZero(float counts);                    // counts at zero pressure (measure with port open to air)
+bool     setZero(float counts);                    // counts at zero pressure (measure with port open to air)
 float    zero() const;
-void     setCal(float k);                          // multiplies the result, default 1.0
-void     setCountsRange(uint32_t mn, uint32_t mx); // override nominal MIN/MAX counts of the transfer function
-void     setRange(float p_max, MprUnit native);    // for MprRange::CUSTOM: full scale value and its unit
+bool     setCal(float k);                          // multiplies the result, default 1.0
+bool     setCountsRange(uint32_t mn, uint32_t mx); // override nominal MIN/MAX counts of the transfer function
+bool     setRange(float p_max, MprUnit native);    // for MprRange::CUSTOM: full scale value and its unit
 uint32_t minCounts() const;
 uint32_t maxCounts() const;
 ```
@@ -137,6 +140,8 @@ while (n < 100) {
 }
 mpr.setZero((float)(sum / n));
 ```
+
+The setters `setZero()`, `setCal()`, `setCountsRange()` and `setRange()` return `false` and keep the previous value if the input is unusable: not finite, zero `cal`, a counts range that is reversed, empty or larger than 24 bit, a zero or negative full scale.
 
 `setCountsRange()` is for a sensor whose measured counts at zero and at full scale differ from the nominal ones (for example a 0300YG that reads 413,800 at zero instead of 419,430). `setZero()` is usually enough.
 

@@ -1,5 +1,8 @@
 // Basic MPR example: status polling (no EOC pin), prints pressure in mmHg.
 // Sensor: MPRLS0300YG (0..300 mmHg gage), transfer function B, I2C address 0x18.
+#if !defined(ARDUINO_ARCH_ESP32)
+  #error "This example uses ESP32 APIs (TwoWire(n), printf, FreeRTOS). For other boards see BasicPortable."
+#endif
 #include <Wire.h>
 #include <MPR.h>
 
