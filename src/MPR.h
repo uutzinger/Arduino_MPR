@@ -3,7 +3,7 @@
 //
 // Driver for Honeywell MPR / MPRLS series pressure sensors, I2C variant.
 //
-//  - Non-blocking state machine, call update() from loop() or from a task
+//  - Non-blocking state machine (except automatic sensor reset / bus recovery), call update() from loop() or from a task
 //  - End of conversion by EOC interrupt (when EOC pin is wired) or by
 //    status byte polling (fallback, automatic)
 //  - Optional RST pin: reset and recovery
@@ -168,7 +168,7 @@ public:
   void     end();
   bool     start(uint32_t interval_us = 0);   // 0 = back to back, else fixed period
   void     stop();
-  void     update();                          // non-blocking
+  void     update();                          // non-blocking, except automatic reset / bus recovery (see Design.md)
   bool     reset();                           // RST pulse, blocks about 15 ms
 
   // Shared bus
@@ -177,6 +177,7 @@ public:
   // State
   uint8_t  status() const        { return _status; }
   uint16_t lastError() const     { return _last_err; }
+  void     clearStats();                      // reset counters and conversion statistics (call from the update() task)
   uint8_t  lastI2CResult() const { return _i2c_rc; }
   MprMode  mode() const;
   MprStats stats() const;
@@ -284,7 +285,7 @@ public:
 
   uint16_t avail() const { return (uint16_t)_rb.available(); }
   bool     pop(MprSample &s) { return _rb.pop(s) == 1; }
-  uint32_t overruns() const { return _overruns; }
+  uint32_t overruns() const { return _overruns; }   // approximate: a concurrent pop() between the full check and the push can count a sample that was not lost
   void     clear() { _rb.clear(); }
 
 private:

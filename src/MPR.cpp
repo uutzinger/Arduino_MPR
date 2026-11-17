@@ -359,6 +359,12 @@ bool MPR::resetSensor(uint16_t &err) {
   return ok;
 }
 
+void MPR::clearStats() {
+  memset(&_st, 0, sizeof(_st));
+  _st.conv_min_us = 0xFFFFFFFFUL;
+  _conv_sum = 0.0; _conv_n = 0;
+}
+
 MprMode MPR::mode() const {
   if (_state == S_STOPPED) { return MprMode::STOPPED; }
   return (_cfg_mode == MprMode::EOC_INTERRUPT && !_fallback) ? MprMode::EOC_INTERRUPT : MprMode::STATUS_POLL;

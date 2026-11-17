@@ -74,6 +74,7 @@ public:
   // State, for the application's own reporting
   uint8_t  status() const;                // last raw status byte (0xFF if the bus did not answer)
   uint16_t lastError() const;             // error bits of the last attempt (section 6)
+  void     clearStats();                  // reset counters and conversion statistics
   uint8_t  lastI2CResult() const;         // last Wire.endTransmission() code of a command write (read failures: lastError()) of a command write (read failures are reported in lastError())
   MprMode  mode() const;
   MprStats stats() const;
@@ -190,7 +191,7 @@ Edge/race handling
 ```
 
 Rules
-- `update()` never waits. At most one bus transaction per call, plus the data read when ready.
+- `update()` does not wait for the sensor. In normal operation it performs one bus transaction per call; when a conversion completes it deliberately continues in the same call with the data read and the next command, so there is no idle gap between samples. Exception: automatic recovery (section 7) calls the blocking `reset()` (about 10 ms plus up to 50 ms waiting for the power bit) and the application's `onBusRecover`. This happens at most once per `RECOVER_MIN_MS` and only after repeated failures; `onBeforeReset` lets the application prepare.
 - The next conversion is started in the same call that read the data (back to back, roughly 160 to 200 samples/s), or after `interval_us` measured from the previous start, so the rate does not drift with I2C time. A caller that is late by more than one interval does not catch up.
 - If the bus lock is not available (`lock_failed`), the attempt is skipped and repeated on the next `update()`. An EOC flag stays set until the data has really been read. The conversion time-out does not fire while the lock was denied within the last `CONV_TIMEOUT_MS`, so another device holding the bus cannot cause resets.
 - Never send a new command while the last status had BUSY set (the sensor ignores commands while busy). After a time-out read the status first; if still busy go to recovery.
@@ -262,7 +263,7 @@ Rules the driver follows so that it can coexist with other devices and drivers:
 1. **Does not own the bus.** It stores only a pointer to the `TwoWire` it was given. `end()` and recovery never call `Wire.end()` themselves.
 2. **Does not change shared settings by default.** `begin(wire)` leaves clock and time-out alone. `begin(wire, clock_hz)` with a non-zero value is an explicit request to set the clock, and is documented as affecting every device on the bus. The clock must be a speed all devices on the bus support; the main program is responsible for that.
 3. **Short, self-contained transactions.** Every driver call is a complete write or a complete read (`beginTransmission/endTransmission`, or `requestFrom` followed immediately by reading the bytes). The driver never holds the bus open between calls, never leaves a transaction half done, and never uses a repeated start across `update()` calls. Other drivers can therefore interleave their own transactions between ours.
-4. **Non-blocking cost is bounded.** One `update()` call costs at most one command write (3 bytes) or one 4-byte read, so it adds a few hundred microseconds at 100 kHz to the loop. Main programs that need strict timing for other devices can call `update()` at a point of their choosing.
+4. **Non-blocking cost is bounded.** A normal `update()` call costs one status read, or one command write (3 bytes) or one 4-byte read; completing a sample does the read and the next command in one call. That adds a few hundred microseconds to about a millisecond at 100 kHz to the loop. Automatic recovery is the exception, see above. Main programs that need strict timing for other devices can call `update()` at a point of their choosing.
 5. **Optional bus lock.** If `update()` and other drivers run in different tasks, the main program supplies `setBusLock(lock, unlock, ctx)` (typically a FreeRTOS mutex shared by all drivers on this bus). The driver calls `lock` before and `unlock` after each transaction (never across several transactions, never from the ISR). If `lock` returns false (bus busy longer than the main program allows), the driver skips this attempt without counting it as a sensor error and tries again on the next `update()`. Without a lock the driver assumes all bus access happens from one task.
 6. **No bus access from the ISR.** The EOC interrupt only sets a flag, so it cannot disturb a transaction that another driver has in progress. The data read happens later in `update()`, after the lock is acquired.
 7. **Address conflicts.** The I2C address is a constructor argument. The driver does not scan the bus. A device at the same address on the same bus is a main-program error and shows up as `E_BUS` / garbage status.

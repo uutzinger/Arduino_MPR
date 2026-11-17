@@ -52,9 +52,10 @@ void setup() {
   mpr.setRecoveryCallbacks(cb);
 
   bool ok = mpr.begin(myWire);          // resets the sensor through RST, waits for the power bit
-  Serial.printf("MPR begin: %s, mode %s\n", ok ? "ok" : "NOT ready",
-                mpr.mode() == MprMode::EOC_INTERRUPT ? "EOC interrupt" : "status poll");
   mpr.start(0);                         // back to back, up to about 160 readings/s
+  MprMode mode = mpr.mode();            // the mode is only known after start()
+  Serial.printf("MPR begin: %s, mode %s\n", ok ? "ok" : "NOT ready",
+                mode == MprMode::EOC_INTERRUPT ? "EOC interrupt" : mode == MprMode::STATUS_POLL ? "status poll" : "stopped");
 }
 
 void loop() {

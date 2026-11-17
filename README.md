@@ -100,7 +100,7 @@ bool reset();                           // RST pulse, blocks about 15 ms
   - It does **not** call `Wire.begin()`. Set up the bus (pins, clock, time-out) in your program first.
   - `clock_hz = 0` leaves the bus clock alone (recommended, especially on a shared bus). A non-zero value calls `setClock()` and affects every device on that bus.
 - **`start(interval_us)`**: `0` runs conversions back to back (about 160 to 200 samples/s). A non-zero value starts a conversion every `interval_us` microseconds, measured from start to start (no drift). If the loop is late the driver does not try to catch up.
-- **`update()`** is the only function that talks to the sensor after `begin()`. Call it often from `loop()` or from a task you create. It handles interrupt from EOC. It does at most one short I2C transaction per call and never waits. The sampling rate is only reached if `update()` is called at least every few hundred microseconds to a millisecond; in EOC mode the exact time of each sample is still captured by the interrupt.
+- **`update()`** is the only function that talks to the sensor after `begin()`. Call it often from `loop()` or from a task you create. It handles interrupt from EOC. In normal operation it does at most one short I2C transaction per call, or two or three back to back when a sample completes (status check, 4-byte read, next command), and it does not wait. The one exception is automatic recovery: a sensor reset (needs the RST pin) blocks `update()` for about 10 ms plus the wait for the power bit (bounded by 50 ms), and `onBusRecover` runs your own code; both are rate limited by `MPR_RECOVER_MIN_MS`. If this is not acceptable in your loop, use `onBeforeReset` to prepare for it. The sampling rate is only reached if `update()` is called at least every few hundred microseconds to a millisecond; in EOC mode the exact time of each sample is still captured by the interrupt.
 - **`stop()`** halts conversions and detaches the interrupt; **`end()`** also forgets the `TwoWire`. `start()` can be called again afterwards.
 - **`reset()`** needs an RST pin (returns `false` otherwise). It blocks for about 15 ms (5 ms low, 5 ms wait, then waits for the power bit). The driver also calls it by itself during recovery.
 
@@ -208,6 +208,7 @@ The driver reports what happened; your program decides if and when to print it.
 ```cpp
 uint8_t  status() const;        // last raw status byte from the sensor (0xFF = bus did not answer)
 uint16_t lastError() const;     // error bits of the last attempt, 0 = fine
+void     clearStats();                // reset counters and conversion statistics
 uint8_t  lastI2CResult() const; // last Wire.endTransmission() code of a command write (read failures: lastError()) of a command write (read failures are reported in lastError())
 MprMode  mode() const;
 MprStats stats() const;

@@ -433,11 +433,25 @@ static void test_bus_recover_success() {
   CHECK(m.stats().good > good);
 }
 
+static void test_clear_stats() {
+  printf("clearStats\n");
+  reset_sim();
+  M m(MprRange::R_0300YG, MprTransfer::B, MprUnit::MMHG, 0x18, 10, 11);
+  m.begin(wire); m.start(0);
+  run_ms(m, 100);
+  CHECK(m.stats().good > 0 && m.stats().conv_max_us > 0);
+  m.clearStats();
+  MprStats st = m.stats();
+  CHECK(st.good == 0 && st.bad == 0 && st.conv_max_us == 0 && st.conv_mean_us == 0.0f);
+  run_ms(m, 100);
+  CHECK(m.stats().good > 0 && m.stats().conv_min_us >= MPR_CONV_MIN_US);
+}
+
 int main() {
   test_text(); test_conversion(); test_poll(); test_eoc(); test_eoc_missing();
   test_saturation_and_range(); test_recovery_reset(); test_power_on_reset(); test_bus_dead();
   test_busy_timeout(); test_bus_lock(); test_lock_denied_no_timeout(); test_delayed_unlock(); test_early_edge();
-  test_begin_failure_reporting(); test_no_command_while_busy(); test_busy_with_fault(); test_bus_recover_success();
+  test_begin_failure_reporting(); test_no_command_while_busy(); test_busy_with_fault(); test_bus_recover_success(); test_clear_stats();
   printf(g_fail ? "\n%d CHECK(S) FAILED\n" : "\nall passed\n", g_fail);
   return g_fail ? 1 : 0;
 }

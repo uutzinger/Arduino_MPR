@@ -68,10 +68,12 @@ void runDiagnostics() {
   MPR::statusString(mpr.status(), msg, sizeof(msg));
   if (ok) { Serial.printf("[PASS] Status: %s\n", msg); }
   else    { Serial.printf("[FAIL] Status: %s, I2C: %s\n", msg, MPR::i2cResultString(mpr.lastI2CResult())); fails++; }
-  Serial.printf("       mode: %s\n", mpr.mode() == MprMode::EOC_INTERRUPT ? "EOC interrupt" : "status poll");
 
-  // 2. Readings
+  // 2. Readings (statistics cover this run only)
+  mpr.clearStats();
   mpr.start(10000);
+  MprMode mode = mpr.mode();                    // valid only after start()
+  Serial.printf("       mode: %s\n", mode == MprMode::EOC_INTERRUPT ? "EOC interrupt" : mode == MprMode::STATUS_POLL ? "status poll" : "stopped");
   double mean, sd; uint32_t cmin, cmax;
   uint16_t got = collect(DIAG_SAMPLES, mean, sd, cmin, cmax);
   float pct = 100.0f * got / DIAG_SAMPLES;
@@ -100,10 +102,13 @@ void runDiagnostics() {
     if (st.conv_max_us <= CONV_WARN_US) { Serial.printf("[PASS] Conversion: %lu..%lu us, mean %.0f us\n", (unsigned long)st.conv_min_us, (unsigned long)st.conv_max_us, st.conv_mean_us); }
     else { Serial.printf("[WARN] Conversion up to %lu us, mean %.0f us\n", (unsigned long)st.conv_max_us, st.conv_mean_us); warns++; }
   }
-  if (EOC_PIN >= 0) {
+  if (EOC_PIN < 0) { Serial.println("[SKIP] EOC pin not configured"); }
+  else if (mode != MprMode::EOC_INTERRUPT) { Serial.println("[SKIP] EOC pin has no interrupt support, status polling is used"); }
+  else if (st.good == 0) { Serial.println("[SKIP] EOC: no successful reading, inconclusive"); }
+  else {
     if (st.eoc_timeouts == 0 && st.eoc_low_seen == 0) { Serial.println("[PASS] EOC pin signalled every conversion"); }
     else { Serial.printf("[FAIL] EOC: %lu time-outs, %lu times low while ready. Check the EOC wire.\n", (unsigned long)st.eoc_timeouts, (unsigned long)st.eoc_low_seen); fails++; }
-  } else { Serial.println("[SKIP] EOC pin not configured"); }
+  }
 
   if      (fails) { Serial.printf("=== Result: FAIL (%u failed, %u warnings) ===\n", fails, warns); }
   else if (warns) { Serial.printf("=== Result: PASS with %u warnings ===\n", warns); }
