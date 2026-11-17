@@ -199,7 +199,7 @@ cb.ctx           = nullptr;    // passed to every callback
 mpr.setRecoveryCallbacks(cb);
 ```
 
-Recovery ladder: a bad reading is retried on the next cycle; after 3 bad readings in a row (or a memory error, or a detected power-on reset) the sensor is reset through the RST pin; after 50 bad readings in a row `onBusRecover` is called; if that does not help the driver goes into a failed state and retries once per second. The first good reading ends it. Without an RST pin only the last two steps exist (the sensor has no soft reset).
+Recovery ladder: a bad reading is retried on the next cycle; after 3 bad readings in a row (or a memory error, or a detected power-on reset) the sensor is reset through the RST pin; after 50 bad readings in a row `onBusRecover` is called; if it reports success the driver retries once per second and only goes into the failed state if the readings are still bad after the next 2 s cooldown; if the callback is missing or reports failure the driver goes into the failed state at once and retries once per second. The first good reading ends it. Without an RST pin only the last two steps exist (the sensor has no soft reset).
 
 ## Error Handling
 
@@ -208,7 +208,7 @@ The driver reports what happened; your program decides if and when to print it.
 ```cpp
 uint8_t  status() const;        // last raw status byte from the sensor (0xFF = bus did not answer)
 uint16_t lastError() const;     // error bits of the last attempt, 0 = fine
-uint8_t  lastI2CResult() const; // last Wire.endTransmission() code
+uint8_t  lastI2CResult() const; // last Wire.endTransmission() code of a command write (read failures: lastError()) of a command write (read failures are reported in lastError())
 MprMode  mode() const;
 MprStats stats() const;
 ```

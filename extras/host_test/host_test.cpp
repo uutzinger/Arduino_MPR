@@ -18,7 +18,7 @@ struct Sim {
   uint8_t  flags = 0x40;          // status bits besides busy
   uint32_t counts = 419430;
   bool     busy_stuck = false;    // never completes
-  int      cmds = 0;
+  int      cmds = 0, ignored = 0;  // ignored: commands sent while busy
   int      eoc_pin = 10, rst_pin = 11;
   int      eoc_level = 0;
   bool     rst_low = false;
@@ -50,7 +50,8 @@ void TwoWire::beginTransmission(uint8_t a) { _addr = a; _ntx = 0; }
 size_t TwoWire::write(uint8_t b) { if (_ntx < 8) _tx[_ntx++] = b; return 1; }
 uint8_t TwoWire::endTransmission() {
   if (!sim.present) return 2;
-  if (_ntx == 3 && _tx[0] == 0xAA) { sim.cmds++; sim.eoc_level = 0; sim.converting = true; sim.done_us = g_now_us + sim.conv_us; }
+  if (_ntx == 3 && _tx[0] == 0xAA && (sim.converting || sim.busy_stuck)) { sim.ignored++; }   // sensor ignores commands while busy
+  else if (_ntx == 3 && _tx[0] == 0xAA) { sim.cmds++; sim.eoc_level = 0; sim.converting = true; sim.done_us = g_now_us + sim.conv_us; }
   g_now_us += 300;                     // 3 bytes at 100 kHz
   return 0;
 }
@@ -351,10 +352,92 @@ static void test_early_edge() {
   CHECK(st.good > 0 && st.conv_min_us >= MPR_CONV_MIN_US);
 }
 
+static bool cbBusFix(void *) { cbc.bus++; sim.present = true; return true; }
+
+// F06: failed begin()/reset() must report the failure
+static void test_begin_failure_reporting() {
+  printf("failed begin reports error and status\n");
+  for (int rst = 0; rst < 2; rst++) {
+    reset_sim();
+    M m(MprRange::R_0300YG, MprTransfer::B, MprUnit::MMHG, 0x18, 10, rst ? 11 : -1);
+    CHECK(m.begin(wire));
+    CHECK(m.lastError() == 0);
+    sim.present = false;
+    CHECK(!m.begin(wire));
+    CHECK(m.lastError() & MPR::E_READ);
+    CHECK(m.status() == 0xFF);
+    sim.present = true; sim.flags = 0x44; sim.ignore_rst = true;   // memory fault, not cleared by reset
+    CHECK(!m.begin(wire));
+    CHECK(m.lastError() & MPR::E_MEM);
+    sim.flags = 0x40; sim.ignore_rst = false;
+    CHECK(m.begin(wire));
+    CHECK(m.lastError() == 0);                  // success clears the earlier error
+  }
+}
+
+// F07: lifecycle calls must not send a command to a busy sensor
+static void test_no_command_while_busy() {
+  printf("lifecycle calls do not command a busy sensor\n");
+  reset_sim();
+  M m(MprRange::R_0300YG, MprTransfer::B, MprUnit::MMHG, 0x18, 10, -1);
+  m.begin(wire); m.start(0);
+  while (sim.cmds == 0) { g_now_us += 100; sim.tick(); m.update(); }
+  m.start(0);                                    // restart during a conversion
+  m.update();
+  CHECK(sim.cmds == 1 && sim.ignored == 0);
+  run_ms(m, 200);
+  m.stop(); m.start(0);                          // stop/start around a conversion
+  for (int i = 0; i < 50; i++) { g_now_us += 100; sim.tick(); m.update(); }
+  m.stop();
+  for (int i = 0; i < 200; i++) { g_now_us += 100; sim.tick(); }   // let it finish
+  sim.conv_us = 50000;                           // long conversion: still busy when begin() looks
+  while (!sim.converting) { m.start(0); g_now_us += 100; sim.tick(); m.update(); m.stop(); }   // stopped mid conversion
+  CHECK(sim.converting);
+  CHECK(m.begin(wire) == false);                 // no RST: sensor busy, begin must say so ...
+  m.start(0);
+  run_ms(m, 100);
+  CHECK(sim.ignored == 0);                       // ... and must not command it
+  CHECK(m.stats().good > 0);
+}
+
+// F08: busy together with a memory fault is reported as memory fault and recovered
+static void test_busy_with_fault() {
+  printf("busy + memory fault -> reset\n");
+  reset_sim();
+  M m(MprRange::R_0300YG, MprTransfer::B, MprUnit::MMHG, 0x18, 10, 11);
+  m.begin(wire); m.start(0);
+  run_ms(m, 50);
+  sim.busy_stuck = true; sim.flags = 0x44;
+  run_ms(m, 15);                                 // well before the 20 ms conversion time-out
+  CHECK(m.stats().err_hist[5] > 0);              // E_MEM counted
+  CHECK(sim.resets >= 2);
+  run_ms(m, 100);
+  CHECK(m.stats().good > 0);
+}
+
+// F09: a successful bus recovery must not report FAILED
+static void test_bus_recover_success() {
+  printf("bus recovery succeeds -> no failed callback\n");
+  reset_sim(); cbc = CbCount();
+  M m(MprRange::R_0300YG, MprTransfer::B, MprUnit::MMHG, 0x18, 10, 11);
+  MprCallbacks cb = {}; cb.onBusRecover = cbBusFix; cb.onFailed = cbFail;
+  m.setRecoveryCallbacks(cb);
+  m.begin(wire); m.start(0);
+  run_ms(m, 100);
+  sim.present = false;
+  run_ms(m, 1000);
+  CHECK(cbc.bus >= 1);
+  uint32_t good = m.stats().good;
+  run_ms(m, 3000);
+  CHECK(cbc.failed == 0);
+  CHECK(m.stats().good > good);
+}
+
 int main() {
   test_text(); test_conversion(); test_poll(); test_eoc(); test_eoc_missing();
   test_saturation_and_range(); test_recovery_reset(); test_power_on_reset(); test_bus_dead();
   test_busy_timeout(); test_bus_lock(); test_lock_denied_no_timeout(); test_delayed_unlock(); test_early_edge();
+  test_begin_failure_reporting(); test_no_command_while_busy(); test_busy_with_fault(); test_bus_recover_success();
   printf(g_fail ? "\n%d CHECK(S) FAILED\n" : "\nall passed\n", g_fail);
   return g_fail ? 1 : 0;
 }

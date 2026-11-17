@@ -93,7 +93,7 @@ MPR::MPR(MprRange range, MprTransfer tf, MprUnit unit, uint8_t i2c_addr, int8_t 
     _pmax(1.0f), _cmin(0), _cmax(1), _zero(0.0f), _cal(1.0f), _scale(1.0f), _fac(1.0f), _have_zero(false),
     _eoc_flag(false), _eoc_us(0), _state(S_STOPPED), _cfg_mode(MprMode::STATUS_POLL),
     _lock_blocked(false), _t_lockfail(0), _fallback(false), _isr_attached(false), _poll_this(false), _need_idle_check(false), _por(false),
-    _seen_power(false), _failed(false), _interval_us(0), _next_start(0), _t_cmd(0), _t_poll(0),
+    _seen_power(false), _failed(false), _bus_tried(false), _interval_us(0), _next_start(0), _t_cmd(0), _t_poll(0),
     _fallback_ms(0), _last_reset_ms(0), _last_bus_ms(0), _consec(0), _warn(0), _status(0), _i2c_rc(0),
     _last_err(0), _conv_sum(0.0), _conv_n(0), _sink(nullptr), _sink_ctx(nullptr), _lock(nullptr), _unlock(nullptr),
     _lock_ctx(nullptr)
@@ -259,7 +259,8 @@ bool MPR::begin(TwoWire &wire, uint32_t clock_hz) {
   if (_eoc >= 0) { pinMode(_eoc, INPUT); }
   _cfg_mode = (_eoc >= 0 && digitalPinToInterrupt(_eoc) != NOT_AN_INTERRUPT) ? MprMode::EOC_INTERRUPT
                                                                             : MprMode::STATUS_POLL;
-  _por = false; _seen_power = false; _failed = false; _consec = 0; _need_idle_check = false;
+  _por = false; _seen_power = false; _failed = false; _bus_tried = false; _consec = 0;
+  // _need_idle_check is kept: a conversion may still be running, see below
 
   bool ok;
   if (_rst >= 0) {
@@ -268,9 +269,12 @@ bool MPR::begin(TwoWire &wire, uint32_t clock_hz) {
     delay(MPR_STARTUP_MS);
     int st = readStatusByte();
     ok = false;
-    if (st >= 0) {
-      _status = (uint8_t)st;
-      ok = (st != 0xFF) && !(st & ST_INVALID) && (st & ST_POWERED) && !(st & ST_INTEGRITY);
+    if (st != -2) {                             // lock denied: no sensor outcome, keep previous status / error
+      uint16_t e = statusOutcome(st);
+      _last_err = e;
+      _status   = (st >= 0) ? (uint8_t)st : 0xFF;
+      if (st >= 0 && st != 0xFF && !(st & ST_INVALID)) { _need_idle_check = (st & ST_BUSY) != 0; }   // never command a busy sensor
+      ok = (e == 0);
       _seen_power = ok;
     }
   }
@@ -285,12 +289,13 @@ void MPR::end() {
 bool MPR::start(uint32_t interval_us) {
   if (_wire == nullptr) { return false; }
   _interval_us = interval_us;
-  clearEoc(); _fallback = false; _poll_this = false;
-  _consec = 0; _failed = false;
+  _consec = 0; _failed = false; _bus_tried = false;
   _last_reset_ms = _last_bus_ms = millis() - MPR_RECOVER_MIN_MS;
   attachEoc();
+  if (_state == S_CONVERTING) { return true; }  // already sampling: only the interval changes, the running conversion is not disturbed
+  clearEoc(); _fallback = false; _poll_this = false;
   _next_start = micros();
-  _state = S_IDLE;
+  _state = S_IDLE;                              // a pending busy check (_need_idle_check) is preserved
   return true;
 }
 
@@ -300,26 +305,53 @@ void MPR::stop() {
   _state = S_STOPPED;
 }
 
+// Error code describing a status byte seen during initialization / reset (0 = ready, powered, no fault).
+// st < 0: no usable answer from the sensor.
+uint16_t MPR::statusOutcome(int st) const {
+  if (st < 0)                          { return E_READ; }
+  if (st == 0xFF || (st & ST_INVALID)) { return E_BUS; }
+  uint16_t e = 0;
+  if (!(st & ST_POWERED))  { e |= E_POWER; }
+  if (st & ST_INTEGRITY)   { e |= E_MEM; }
+  if (st & ST_BUSY)        { e |= E_BUSY; }
+  return e;
+}
+
 bool MPR::reset() {
+  uint16_t e;
+  bool ok = resetSensor(e);
+  if (e != OUTCOME_NONE) { _last_err = e; }     // manual reset: report the outcome
+  return ok;
+}
+
+// err: outcome of the reset, OUTCOME_NONE if the bus lock never allowed talking to the sensor.
+bool MPR::resetSensor(uint16_t &err) {
+  err = OUTCOME_NONE;
   if (_rst < 0 || _wire == nullptr) { return false; }
   digitalWrite(_rst, LOW);  delay(MPR_RST_LOW_MS);
   digitalWrite(_rst, HIGH); delay(MPR_RST_WAIT_MS);
 
   bool ok = false;
+  bool busy_seen = false;
   uint32_t t0 = millis();
   do {
     int st = readStatusByte();
-    if (st >= 0) {
-      _status = (uint8_t)st;
-      if (st != 0xFF && !(st & ST_INVALID) && (st & ST_POWERED) && !(st & ST_INTEGRITY) && !(st & ST_BUSY)) { ok = true; break; }
+    if (st != -2) {
+      uint16_t e = statusOutcome(st);
+      err = e;
+      _status = (st >= 0) ? (uint8_t)st : 0xFF;
+      busy_seen = (st >= 0 && st != 0xFF && !(st & ST_INVALID) && (st & ST_BUSY));
+      if (e == 0) { ok = true; break; }
     }
     delay(2);
   } while ((millis() - t0) < MPR_RST_TIMEOUT_MS);
+  if (err == E_BUSY) { err = E_TIMEOUT; }       // only busy until the end of the wait
 
   _st.resets++;
   _por = false;
   _seen_power = ok;
-  _need_idle_check = false;
+  if (ok) { _need_idle_check = false; }         // a failed reset says nothing about the sensor being idle
+  else if (busy_seen) { _need_idle_check = true; }
   clearEoc();
   _fallback = false;                 // a stuck sensor also explains a missing EOC edge: try the interrupt again
   if (_state == S_CONVERTING) { _state = S_IDLE; }
@@ -413,6 +445,8 @@ void MPR::processConverting(uint32_t now) {
     } else {
       _status = (uint8_t)st;
       if (st == 0xFF || (st & ST_INVALID)) { sampleBad(E_BUS); return; }
+      uint16_t fatal = decode((uint8_t)st, _cmin) & (E_POWER | E_MEM);   // valid even while busy: do not wait for a busy sensor that reports a fault
+      if (fatal) { sampleBad(fatal); return; }
       if (!(st & ST_BUSY)) {
         uint32_t t = micros();
         if (_cfg_mode == MprMode::EOC_INTERRUPT) {          // EOC must be high when data is ready
@@ -457,6 +491,8 @@ bool MPR::finishRead(uint32_t t_stamp) {
   uint16_t e = decode(_status, counts);
 
   if (e & E_BUSY) {                              // not ready after all: keep waiting, by polling
+    uint16_t fatal = e & (E_BUS | E_POWER | E_MEM);   // status-level faults are valid even though the data is not
+    if (fatal) { sampleBad(fatal); return true; }
     _last_err = E_BUSY;
     _st.err_hist[8]++;
     if (_cfg_mode == MprMode::EOC_INTERRUPT && !_fallback && !_poll_this) { _st.eoc_early++; }
@@ -484,6 +520,7 @@ bool MPR::finishRead(uint32_t t_stamp) {
   _last_err = e;
   _consec   = 0;
   _failed   = false;
+  _bus_tried = false;
   _state    = S_IDLE;                            // next conversion starts in this same update() call
 
   if (_sink) {
@@ -501,7 +538,7 @@ void MPR::sampleBad(uint16_t err) {
   _consec++;
   if (err & E_TIMEOUT) { _need_idle_check = true; }
   _state = S_IDLE;
-  _next_start = micros() + (_failed ? MPR_FAILED_GAP_US : MPR_RETRY_GAP_US);
+  _next_start = micros() + ((_failed || _bus_tried) ? MPR_FAILED_GAP_US : MPR_RETRY_GAP_US);
   recoveryLadder();
 }
 
@@ -513,7 +550,8 @@ void MPR::recoveryLadder() {
   if (want_reset && _rst >= 0 && (ms - _last_reset_ms) >= MPR_RECOVER_MIN_MS) {
     _last_reset_ms = ms;
     if (_cb.onBeforeReset) { _cb.onBeforeReset(_cb.ctx); }
-    bool ok = reset();
+    uint16_t re;
+    bool ok = resetSensor(re);
     if (_cb.onAfterReset) { _cb.onAfterReset(_cb.ctx, ok); }
     if (ok) { _consec = 0; return; }
   }
@@ -521,11 +559,15 @@ void MPR::recoveryLadder() {
   // Step 3 and 4: bus recovery, then failed state
   if (_consec >= MPR_BUS_RESTART_AFTER && (ms - _last_bus_ms) >= MPR_RECOVER_MIN_MS) {
     _last_bus_ms = ms;
+    bool repaired = false;
     if (_cb.onBusRecover) {
       _st.bus_restarts++;
-      _cb.onBusRecover(_cb.ctx);
+      repaired = _cb.onBusRecover(_cb.ctx);
     }
-    if (!_failed) {
+    if (repaired && !_bus_tried) {
+      _bus_tried = true;                        // give the repaired bus a chance: retry slowly, FAILED only if it is still bad
+      _next_start = micros() + MPR_FAILED_GAP_US;   // after the next cooldown
+    } else if (!_failed) {
       _failed = true;
       if (_cb.onFailed) { _cb.onFailed(_cb.ctx); }
     }

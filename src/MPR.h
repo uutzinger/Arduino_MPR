@@ -226,6 +226,9 @@ private:
   uint16_t decode(uint8_t status, uint32_t counts);
   void     sampleBad(uint16_t err);
   void     recoveryLadder();
+  bool     resetSensor(uint16_t &err);
+  uint16_t statusOutcome(int st) const;
+  static const uint16_t OUTCOME_NONE = 0xFFFF;
   void     computeScale();
   void     attachEoc();
   void     detachEoc();
@@ -252,7 +255,7 @@ private:
   MprMode  _cfg_mode;
   bool     _lock_blocked;
   uint32_t _t_lockfail;
-  bool     _fallback, _isr_attached, _poll_this, _need_idle_check, _por, _seen_power, _failed;
+  bool     _fallback, _isr_attached, _poll_this, _need_idle_check, _por, _seen_power, _failed, _bus_tried;
   uint32_t _interval_us, _next_start, _t_cmd, _t_poll, _fallback_ms;
   uint32_t _last_reset_ms, _last_bus_ms;
   uint32_t _consec;

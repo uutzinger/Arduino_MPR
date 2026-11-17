@@ -74,7 +74,7 @@ public:
   // State, for the application's own reporting
   uint8_t  status() const;                // last raw status byte (0xFF if the bus did not answer)
   uint16_t lastError() const;             // error bits of the last attempt (section 6)
-  uint8_t  lastI2CResult() const;         // last Wire.endTransmission() code
+  uint8_t  lastI2CResult() const;         // last Wire.endTransmission() code of a command write (read failures: lastError()) of a command write (read failures are reported in lastError())
   MprMode  mode() const;
   MprStats stats() const;
 
@@ -337,8 +337,8 @@ Recovery ladder, entered from the ERROR state:
 |---|---|---|
 | 1 | any single bad reading | count, retry on the next cycle |
 | 2 | `RETRY_MAX` consecutive bad readings, or `E_MEM`, or a detected power-on reset | with RST pin: `onBeforeReset`, `reset()`, `onAfterReset`, restart sampling |
-| 3 | `BUS_RESTART_AFTER` consecutive bad readings (lock failures do not count) and at least `RECOVER_MIN_MS` since the last restart | `onBusRecover()`. If the callback is missing, keep `E_BUS` set and retry at 1 Hz |
-| 4 | still failing | state `FAILED`, retry at 1 Hz, `onFailed()` once; counters visible in `stats()`. Sampling resumes automatically on the first good reading |
+| 3 | `BUS_RESTART_AFTER` consecutive bad readings (lock failures do not count) and at least `RECOVER_MIN_MS` since the last restart | `onBusRecover()`. If it returns true the driver does not declare failure yet: it retries at 1 Hz and enters step 4 only if the readings are still bad after the next cooldown. If the callback is missing or returns false, go to step 4 at once (the triggering error stays in `lastError()`) |
+| 4 | still failing (or recovery impossible) | state `FAILED`, retry at 1 Hz, `onFailed()` once; counters visible in `stats()`. Sampling resumes automatically on the first good reading |
 
 Callbacks (all optional; called from `update()`, never from the ISR, never during a bus transaction):
 
@@ -351,6 +351,10 @@ struct MprCallbacks {
   void *ctx;
 };
 ```
+
+`start()` while sampling only changes the interval; it does not restart or disturb the running conversion. `begin()`, `stop()` and `start()` preserve the knowledge that a conversion may still be running, and the next command waits until the status shows idle. A failed `begin()` or `reset()` sets `lastError()` (`E_READ` no answer, `E_BUS`, `E_POWER`, `E_MEM`, `E_BUSY`, `E_TIMEOUT` still busy after the reset wait) and `status()`; a denied bus lock changes neither.
+
+A BUSY status together with `E_POWER` or `E_MEM` is handled as that fault immediately; only the (invalid) pressure data is discarded.
 
 Without callbacks the driver still performs steps 1 and 2 (if RST exists) and counts everything.
 
