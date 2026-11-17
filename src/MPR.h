@@ -282,7 +282,7 @@ public:
 private:
   static void sinkFn(void *ctx, const MprSample &s) {
     MPRBuffer *self = static_cast<MPRBuffer *>(ctx);
-    if (self->_rb.available() >= N) { self->_overruns++; }
+    if (self->_rb.available() >= N) { self->_overruns = self->_overruns + 1; }
     self->_rb.push(s, true);
   }
 
