@@ -4,6 +4,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <math.h>
+#include <initializer_list>
 TwoWire Wire;
 
 uint32_t g_now_us = 1000;
@@ -263,7 +264,8 @@ static void test_busy_timeout() {
 }
 
 static bool g_lock_ok = true; static int g_locks = 0, g_unlocks = 0;
-static bool lockFn(void *) { if (!g_lock_ok) return false; g_locks++; return true; }
+static uint32_t g_lock_adv_us = 0;
+static bool lockFn(void *) { if (!g_lock_ok) { g_now_us += g_lock_adv_us; return false; } g_locks++; return true; }
 static void unlockFn(void *) { g_unlocks++; }
 
 static void test_bus_lock() {
@@ -285,10 +287,32 @@ static void test_bus_lock() {
   CHECK(m.stats().good > good);
 }
 
+// F01: a denied lock (which itself takes time) must not cause a timeout, even past the conversion deadline
+static void test_lock_denied_no_timeout() {
+  printf("denied lock past deadline: no timeout\n");
+  for (uint32_t adv : {0u, 5000u}) {
+    reset_sim(); g_lock_ok = true; g_lock_adv_us = 0;
+    M m(MprRange::R_0300YG, MprTransfer::B, MprUnit::MMHG, 0x18, 10, 11);
+    m.setBusLock(lockFn, unlockFn, nullptr);
+    m.begin(wire); m.start(0);
+    run_ms(m, 50);
+    sim.busy_stuck = true;
+    run_ms(m, 5);                               // conversion started, will never complete
+    int resets = sim.resets;
+    g_lock_ok = false; g_lock_adv_us = adv;
+    run_ms(m, 200);                             // well past the 20 ms deadline, every lock attempt denied
+    MprStats st = m.stats();
+    CHECK(st.lock_failed > 0);
+    CHECK(st.bad == 0 && st.err_hist[2] == 0);
+    CHECK(sim.resets == resets);
+    g_lock_ok = true; g_lock_adv_us = 0;
+  }
+}
+
 int main() {
   test_text(); test_conversion(); test_poll(); test_eoc(); test_eoc_missing();
   test_saturation_and_range(); test_recovery_reset(); test_power_on_reset(); test_bus_dead();
-  test_busy_timeout(); test_bus_lock();
+  test_busy_timeout(); test_bus_lock(); test_lock_denied_no_timeout();
   printf(g_fail ? "\n%d CHECK(S) FAILED\n" : "\nall passed\n", g_fail);
   return g_fail ? 1 : 0;
 }

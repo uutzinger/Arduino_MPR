@@ -364,7 +364,8 @@ void MPR::processConverting(uint32_t now) {
     _t_poll = now;
     int st = readStatusByte();
     if (st == -2) {
-      // bus lock not available: try again at the next poll
+      // bus lock not available: not a sensor error, no timeout evaluation; retry at the next poll
+      return;
     } else if (st < 0) {
       sampleBad(E_READ); return;
     } else {
@@ -386,7 +387,7 @@ void MPR::processConverting(uint32_t now) {
     }
   }
   // Time-out, but not while other users kept us from the bus
-  bool blocked = _lock_blocked && ((now - _t_lockfail) <= MPR_CONV_TIMEOUT_MS * 1000UL);
+  bool blocked = _lock_blocked && ((uint32_t)(micros() - _t_lockfail) <= MPR_CONV_TIMEOUT_MS * 1000UL);   // fresh time: 'now' may predate _t_lockfail
   if (el > MPR_CONV_TIMEOUT_MS * 1000UL && !blocked) { sampleBad(E_TIMEOUT); }
 }
 
