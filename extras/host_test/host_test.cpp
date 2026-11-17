@@ -447,11 +447,27 @@ static void test_clear_stats() {
   CHECK(m.stats().good > 0 && m.stats().conv_min_us >= MPR_CONV_MIN_US);
 }
 
+static void test_buffer_overruns() {
+  printf("MPRBuffer overruns exact\n");
+  reset_sim();
+  MPRBuffer<4> m(MprRange::R_0300YG, MprTransfer::B, MprUnit::MMHG, 0x18, 10, 11);
+  m.begin(wire); m.start(0);
+  run_ms(m, 200);
+  uint32_t good = m.stats().good;
+  CHECK(good > 8);
+  CHECK(m.avail() == 4);
+  CHECK(m.overruns() == good - 4);               // every sample beyond the capacity was dropped, none miscounted
+  MprSample s; m.pop(s);
+  uint32_t o = m.overruns();
+  run_ms(m, 50);
+  CHECK(m.overruns() == o + (m.stats().good - good) - 1);   // one free slot absorbed one sample
+}
+
 int main() {
   test_text(); test_conversion(); test_poll(); test_eoc(); test_eoc_missing();
   test_saturation_and_range(); test_recovery_reset(); test_power_on_reset(); test_bus_dead();
   test_busy_timeout(); test_bus_lock(); test_lock_denied_no_timeout(); test_delayed_unlock(); test_early_edge();
-  test_begin_failure_reporting(); test_no_command_while_busy(); test_busy_with_fault(); test_bus_recover_success(); test_clear_stats();
+  test_begin_failure_reporting(); test_no_command_while_busy(); test_busy_with_fault(); test_bus_recover_success(); test_clear_stats(); test_buffer_overruns();
   printf(g_fail ? "\n%d CHECK(S) FAILED\n" : "\nall passed\n", g_fail);
   return g_fail ? 1 : 0;
 }

@@ -34,6 +34,5 @@ Suggested order: do 1 first, because it can invalidate assumptions in the other 
 
 ## Design decisions pending
 
-- **F10 exact overrun count.** Needs `push()` in UUtzinger_RingBuffer to report how many items it overwrote. Worth doing there if overrun accounting matters; otherwise keep the documented approximation.
 - **Non-blocking recovery (F02).** Only if item 4 under hardware checks shows the stall is a problem.
 - 1.1.0 was released before the hardware checks above. Findings from those checks go into 1.1.x / 1.2.0.

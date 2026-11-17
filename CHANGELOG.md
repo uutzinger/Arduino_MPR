@@ -1,6 +1,16 @@
 # Changelog
 
-Changes between 1.0.0 and 1.1.0. Items F01 to F12 refer to the findings of the code review ("Astra Code Review.md", 2026-11-16). Each entry gives the change and the reason for it.
+Changes between 1.0.0 and 1.2.0. Items F01 to F12 refer to the findings of the code review ("Astra Code Review.md", 2026-11-16). Each entry gives the change and the reason for it.
+
+## 1.2.0 - 2026-11-17
+
+### Changed
+
+- **`MPRBuffer::overruns()` is exact (F10).** The sink uses the new `overwritten` output of `RingBuffer::push()` (UUtzinger_RingBuffer 2.1.0), which is determined in the push's own critical section. *Reason:* the old full check followed by a separate push could count a sample as lost when a consumer popped in between. **Requires UUtzinger_RingBuffer >= 2.1.0** (`depends` updated).
+
+### Tests
+
+- New host test for the overrun count of a full `MPRBuffer`.
 
 ## 1.1.0 - 2026-11-17
 
@@ -46,7 +56,6 @@ Changes between 1.0.0 and 1.1.0. Items F01 to F12 refer to the findings of the c
 ### Changed
 
 - `MPRBuffer::sinkFn` no longer uses `++` on the volatile overrun counter (avoids the C++20 deprecation warning).
-- `MPRBuffer::overruns()` is documented as approximate: a concurrent `pop()` between the full check and the push can count a sample that was not lost (F10). An exact count needs a change in the separate RingBuffer library.
 - Documentation (README, Design.md) now states the real `update()` latency contract (F02): normal operation is non-blocking, a completing sample performs read plus next command in one call, and automatic sensor reset and bus recovery can block for up to about 60 ms, at most once per `MPR_RECOVER_MIN_MS`. Conversion time is measured from the STOP condition of the command. `lastI2CResult()` covers command writes only.
 - Diagnostics example: uses `clearStats()` so results describe the current run, and reports the EOC check as SKIP when no pin, no interrupt support or no successful reading makes it inconclusive (F11).
 - Diagnostics and EocInterrupt examples read the sampling mode after `start()` and print all three modes (F12). Before `start()` the mode is always `STOPPED`.

@@ -285,14 +285,15 @@ public:
 
   uint16_t avail() const { return (uint16_t)_rb.available(); }
   bool     pop(MprSample &s) { return _rb.pop(s) == 1; }
-  uint32_t overruns() const { return _overruns; }   // approximate: a concurrent pop() between the full check and the push can count a sample that was not lost
+  uint32_t overruns() const { return _overruns; }   // samples dropped because the buffer was full
   void     clear() { _rb.clear(); }
 
 private:
   static void sinkFn(void *ctx, const MprSample &s) {
     MPRBuffer *self = static_cast<MPRBuffer *>(ctx);
-    if (self->_rb.available() >= N) { self->_overruns = self->_overruns + 1; }
-    self->_rb.push(s, true);
+    size_t lost = 0;
+    self->_rb.push(s, true, &lost);               // lost count comes from the push itself: exact even if another task pops
+    if (lost) { self->_overruns = self->_overruns + (uint32_t)lost; }
   }
 
   RingBuffer<MprSample, N> _rb;
